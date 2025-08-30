@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+
+  <!-- Fonts and Styles -->
+  <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,500,700,900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='fonts/icomoon/style.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/owl.carousel.min.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+
+  <title>File Manager with Code Panel</title>
+
+  <style>
+    body {
+      background: linear-gradient(90deg, #BE8CEF 0%, rgba(61, 46, 232, 0.83) 100%);
+      font-family: 'Poppins', sans-serif;
+      height: 100vh;
+      margin: 0;
+      padding: 20px;
+    }
+
+    .file-manager-container {
+      background-color: rgba(255, 255, 255, 0.95);
+      border-radius: 20px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+      height: calc(100vh - 40px);
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* THREE PANEL LAYOUT */
+    .left-panel {
+      flex: 1; /* ~25% width */
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #ddd;
+      overflow: hidden;
+      border-radius: 20px 0 0 20px;
+      background: #fff;
+    }
+
+    .file-tree {
+      background-color: #343a40;
+      color: #fff; /* white text */
+      padding: 15px 20px;
+      height: 100%;
+      overflow-y: auto;
+      border-top-left-radius: 20px;
+    }
+
+    /* Make sure all inside text is white */
+    .file-tree ul,
+    .file-tree li,
+    .file-tree .folder-name {
+      color: #fff;
+    }
+
+    .file-tree h4 {
+      margin-top: 0;
+      font-weight: 600;
+      margin-bottom: 15px;
+      color: #fff; /* white header */
+    }
+
+    .file-tree ul {
+      list-style: none;
+      padding-left: 20px;
+      margin-bottom: 0;
+    }
+
+    .file-tree li {
+      cursor: pointer;
+      margin: 5px 0;
+      transition: color 0.2s ease;
+    }
+
+    .file-tree li:hover {
+      color: #00b4cf;
+      text-decoration: underline;
+    }
+
+    .file-tree .folder {
+      font-weight: bold;
+    }
+
+    /* Collapsible folders styles */
+    .file-tree li.folder > ul {
+      display: none; /* hide children initially */
+      margin-left: 15px;
+      padding-left: 10px;
+      border-left: 1px solid #555;
+    }
+
+    .file-tree li.folder.expanded > ul {
+      display: block;
+    }
+
+    .folder-name {
+      cursor: pointer;
+      user-select: none;
+      display: inline-block;
+    }
+
+    .folder-name::before {
+      content: "▶"; /* right-pointing triangle */
+      display: inline-block;
+      margin-right: 6px;
+      transition: transform 0.2s ease;
+    }
+
+    .folder.expanded > .folder-name::before {
+      transform: rotate(90deg); /* rotate to point down */
+    }
+
+    /* MIDDLE PANEL: File content */
+    .middle-panel {
+      flex: 1.8; /* ~45% width */
+      padding: 30px;
+      overflow-y: auto;
+      font-family: monospace;
+      white-space: pre-wrap;
+      background: #fff;
+      border-right: 1px solid #ddd;
+      border-radius: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .middle-panel h5 {
+      font-weight: 600;
+      margin-bottom: 15px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 10px;
+      color: #333;
+    }
+
+    .code-content {
+      flex-grow: 1;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      background: #f9f9f9;
+      border-radius: 10px;
+      padding: 20px;
+      box-shadow: inset 0 0 8px rgba(0,0,0,0.05);
+      font-size: 0.9rem;
+      line-height: 1.4;
+      color: #222;
+    }
+
+    /* RIGHT PANEL: Bug localization */
+    .right-panel {
+      flex: 1; /* ~25% width */
+      background: #f5f5f5;
+      padding: 30px;
+      overflow-y: auto;
+      font-family: monospace;
+      white-space: pre-wrap;
+      border-radius: 0 20px 20px 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .right-panel h4 {
+      font-weight: 600;
+      margin-top: 0;
+      margin-bottom: 15px;
+      border-bottom: 1px solid #ccc;
+      padding-bottom: 10px;
+      color: #333;
+    }
+
+    .bug-content {
+      flex-grow: 1;
+      overflow-y: auto;
+      background: #fff;
+      border-radius: 10px;
+      padding: 20px;
+      box-shadow: inset 0 0 8px rgba(0,0,0,0.05);
+      font-size: 0.9rem;
+      line-height: 1.4;
+      color: #333;
+    }
+
+  </style>
+</head>
+<body>
+
+  <!-- Navbar -->
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-3">
+    <div class="container">
+      <a class="navbar-brand" href="#">MyWebsite</a>
+      <button
+        class="navbar-toggler"
+        type="button"
+        data-toggle="collapse"
+        data-target="#navbarNav"
+        aria-controls="navbarNav"
+        aria-expanded="false"
+        aria-label="Toggle navigation"
+      >
+        <span class="navbar-toggler-icon"></span>
+      </button>
+
+      <div class="collapse navbar-collapse" id="navbarNav">
+        <ul class="navbar-nav ml-auto">
+          <li class="nav-item active">
+            <a class="nav-link" href="#">Home <span class="sr-only">(current)</span></a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="#">About</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="#">Services</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="#">Contact</a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <div class="file-manager-container">
+    <!-- LEFT PANEL: File tree -->
+    <div class="left-panel">
+      <div class="file-tree">
+        <h4>Files</h4>
+        <ul>
+          {% macro render_tree(tree) %}
+            {% for node in tree %}
+              {% if node.type == 'folder' %}
+                <li class="folder">
+                  <span class="folder-name">{{ node.name }}</span>
+                  <ul>
+                    {{ render_tree(node.children) }}
+                  </ul>
+                </li>
+              {% else %}
+                <li onclick="loadFile('{{ node.path }}')">{{ node.name }}</li>
+              {% endif %}
+            {% endfor %}
+          {% endmacro %}
+          {{ render_tree(tree) }}
+        </ul>
+      </div>
+    </div>
+
+    <!-- MIDDLE PANEL: Code content -->
+    <div class="middle-panel">
+      {% if selected_file %}
+        <h5>{{ selected_file }}</h5>
+        <div class="code-content">{{ file_content | e }}</div>
+      {% else %}
+        <p>Select a file from the tree to view its content.</p>
+      {% endif %}
+    </div>
+
+    <!-- RIGHT PANEL: Bug localization -->
+    <div class="right-panel">
+      <h4>Bug Localization</h4>
+      <div id="additionalCodeContent" class="bug-content">
+        <p>This panel is for extra code display, logs, or any info you want.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="{{ url_for('static', filename='js/jquery-3.3.1.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/popper.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/bootstrap.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/jquery.validate.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+
+  <script>
+    function loadFile(path) {
+      window.location.href = '/view?file=' + encodeURIComponent(path);
+    }
+
+    // Collapsible folder toggle
+    document.querySelectorAll('.folder-name').forEach(folderName => {
+      folderName.addEventListener('click', () => {
+        const li = folderName.parentElement;
+        li.classList.toggle('expanded');
+      });
+    });
+  </script>
+
+</body>
+</html>

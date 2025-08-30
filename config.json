@@ -1,0 +1,10 @@
+{
+  "doxyfile_dir":"./",
+  "model_name": "o4-mini-2025-04-16",
+  "joern_dir": "/opt/joern/joern-cli/joern",
+  "_joern_dir":"/home/chiayi/bin/joern/joern-cli/joern",
+  "openai_key": "./openai.key",
+  "project_dir": "/home/chiayi/obs-studio-master",
+  "report_file":"./bug_report.txt",
+  "container_name": "debugger_container"
+}
