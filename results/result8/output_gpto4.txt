@@ -1,0 +1,11 @@
+Summarization
+All three analyses converge on the same root cause in z_tick_sleep (around lines 1110–1119):
+
+• Computation of remaining ticks (“left_ticks”) is done as an unsigned subtraction:  
+  left_ticks = expected_wakeup_ticks – sys_clock_tick_get_32()  
+• If expected_wakeup_ticks is less than the current tick count, that subtraction underflows and wraps to a very large uint32_t.  
+• The code then casts that wrapped unsigned value to int32_t, and immediately back into the unsigned k_ticks_t type:  
+     (k_ticks_t)(int32_t)left_ticks  
+  – A wrapped‐around unsigned value can end up as a positive int32_t, and thus reappear as a huge unsigned k_ticks_t.  
+• The following “if (ticks > 0)” check succeeds, so the function returns this spurious, massive tick count.  
+• In short, an unsigned underflow plus an unsafe signed cast lets an attacker engineer a wildly inflated sleep duration.

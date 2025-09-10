@@ -1,0 +1,43 @@
+Summarization
+Summary of the bug(s) found (based only on the provided code and reasoning)
+
+Root cause
+- Process_GetStringFromPeb unconditionally allocates a kernel pool buffer LocalBuffer near the top:
+  - LocalBufferLength = (StringMaxLenInChars + 16) * sizeof(WCHAR)
+  - LocalBuffer = Mem_Alloc(Driver_Pool, LocalBufferLength)
+- The function only returns that LocalBuffer to the caller (via *OutBuffer and *OutLength) on a single success path guarded by:
+  if (Length && MaximumLength && Buffer && Length <= StringMaxLenInChars && Length <= MaximumLength) { ... set *OutBuffer = LocalBuffer; *OutLength = LocalBufferLength; }
+- On all other non-success exits (condition false) or if an exception occurs inside the __try, the function detaches and returns without freeing LocalBuffer and without setting *OutBuffer. The __except handler is empty and does not free LocalBuffer.
+
+Observable effect
+- LocalBuffer is leaked to kernel pool on every code path where:
+  - the UNICODE_STRING checks fail (e.g., Length == 0, MaximumLength == 0, Buffer == NULL, Length too large, etc.), or
+  - ProbeForRead/other operations raise an exception (caught by the empty __except), because LocalBuffer is not freed in those paths.
+- Because *OutBuffer remains NULL on those failure paths, callers have no way to free LocalBuffer (they only free when OutBuffer != NULL).
+
+Callers and their behavior (relevant examples from provided code)
+- Process_GetCommandLine calls Process_GetStringFromPeb(ProcessObject, CmdLin_offset, 600, OutBuffer, OutLength); it does not free anything itself—caller code that uses the result frees only when OutBuffer and OutLength are non-zero.
+- Process_GetCurDir and Process_GetDocArg call Process_GetStringFromPeb and explicitly Mem_Free(Buffer, Length) only when Buffer && Length are non-zero.
+- Process_GetProcessName and other routines that obtain strings follow the same pattern: they free only when the function returned a non-NULL buffer / non-zero length.
+- Therefore callers do not free the allocation created by Process_GetStringFromPeb when that function fails to return the buffer — confirming the leak is local to Process_GetStringFromPeb.
+
+Concrete non-success/leak paths inside Process_GetStringFromPeb
+- Peb == 0: function returns before allocation (no leak).
+- Mem_Alloc(LocalBuffer) fails: function returns (no leak).
+- After successful allocation:
+  - UNICODE_STRING checks (Length, MaximumLength, Buffer, Length <= StringMaxLenInChars, Length <= MaximumLength) evaluate to false → function leaves __try and returns without freeing LocalBuffer → leak.
+  - Any exception thrown while probing or dereferencing PEB/UserProcessParameters/Buffer is caught by the __except block (which is empty) → KeUnstackDetachProcess runs and function returns without freeing LocalBuffer → leak.
+
+Potential impact
+- Kernel pool memory leak (driver pool) whenever the success criteria are not met or an exception occurs.
+- The function is used to fetch several potentially-large strings (callers pass 600 as StringMaxLenInChars), so repeated failures could consume a significant amount of kernel pool and lead to resource exhaustion or denial-of-service.
+
+Corrective options (derived from analysis of provided code)
+- Ensure LocalBuffer is freed on all non-success paths:
+  - Free LocalBuffer before returning when the guarded copy condition is false.
+  - Free LocalBuffer inside the __except handler (or otherwise ensure the detach/return path frees it).
+- Alternative design: defer allocation of LocalBuffer until after checks succeed (allocate only just before performing the copy), so no allocation needs to be undone on error.
+- Whatever fix is chosen, make sure callers’ existing assumption (they free returned buffer when OutBuffer != NULL) remains valid.
+
+Conclusion
+- The provided code contains a reproducible kernel pool leak in Process_GetStringFromPeb: LocalBuffer is allocated unconditionally but only freed/returned on the single success path; failure or exception paths do not free it and callers never free it because OutBuffer remains NULL. The simplest fix is to free LocalBuffer in all non-success and exception paths (or allocate only after success is known).

@@ -1,0 +1,10 @@
+Summarization
+Here’s what the provided reasoning and code excerpt show:
+
+1. In Settings_new(), the variable legacyDotfile is unconditionally allocated whenever “~/.htoprc” exists (via String_cat).  
+2. The only place legacyDotfile gets freed is inside the “if primary‐read failed and fallback‐read succeeded” branch:  
+     • if Settings_read(this, this->filename) fails but Settings_read(this, legacyDotfile) succeeds, then after writing out the new config the code calls free(legacyDotfile).  
+3. If the primary read succeeds (the overwhelmingly common case), execution never enters that branch and legacyDotfile is never freed.  
+4. Hence there is a one‐time leak of whatever String_cat allocated for legacyDotfile whenever you start htop with a normal first‐try config read.  
+
+No other mismatches between allocation and deallocation were exposed by the supplied reasoning, so the outstanding bug here is simply that legacyDotfile is forgotten (and not freed) on the successful‐read path.

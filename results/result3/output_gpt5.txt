@@ -1,0 +1,32 @@
+
+Summarization
+Summary of the bugs (based only on the provided information)
+
+What happened (observed failure)
+- A crash (segfault) occurred at obs_module_get_locale_string (libobs/obs-module.c:64) when that function attempted to dereference mod (access mod->get_string) while mod was NULL.
+
+Call chain that led to the crash
+- ApplicationAudioCaptureToolbar::Init called:
+  - obs_module_t *mod = obs_get_module("win-wasapi");
+  - const char *device_str = obs_module_get_locale_text(mod, "Window");
+  - ui->deviceLabel->setText(device_str);
+- obs_module_get_locale_text forwards to obs_module_get_locale_string(mod, text, &str).
+- obs_module_get_locale_string does if (mod->get_string) { return mod->get_string(...); } — this dereferences mod without checking mod for NULL and thus crashed when mod == NULL.
+- obs_get_module("win-wasapi") returned NULL (the provided reasoning & call stack/platform info indicate the win-wasapi module was not present on Ubuntu), so NULL was passed into obs_module_get_locale_text and into obs_module_get_locale_string.
+
+Primary bug (root cause)
+- ApplicationAudioCaptureToolbar::Init assumes obs_get_module(...) returns a non-NULL pointer and uses that pointer directly. It does not check mod for NULL before calling obs_module_get_locale_text, allowing a NULL module pointer to be propagated into lower-level functions and ultimately causing a crash.
+
+Secondary bug (contributing / defensive programming)
+- obs_module_get_locale_string assumes the mod pointer itself is valid and dereferences mod->get_string without first checking whether mod is NULL. The function only checks mod->get_string, which dereferences mod; it is not defensive against callers passing a NULL mod.
+
+Relevant code locations (from provided snippets)
+- ApplicationAudioCaptureToolbar::Init: the three lines creating mod via obs_get_module("win-wasapi"), calling obs_module_get_locale_text(mod, "Window"), and setting ui->deviceLabel.
+- obs_module_get_locale_text: forwards to obs_module_get_locale_string(mod, text, &str).
+- obs_module_get_locale_string: checks mod->get_string (dereferencing mod) and calls it if present.
+- obs_get_module: searches obs->first_module and returns NULL when no matching module name is found.
+
+Impact
+- When the named module ("win-wasapi") is not loaded/available (as on the provided platform), ApplicationAudioCaptureToolbar::Init passes NULL to localization lookup code and the program segfaults.
+
+No assumptions beyond the provided information were made.

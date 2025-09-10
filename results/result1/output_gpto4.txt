@@ -1,0 +1,22 @@
+Summarization
+Here’s what the information tells us about the bug:
+
+1. In trackingRememberKeys() we call  
+   getKeysFromCommand(...,&result)  
+   which on some commands (including PUBSUB) will allocate a heap buffer for result.keys.
+
+2. Immediately after that, we check  
+   if (executing->cmd->flags & CMD_PUBSUB) {  
+       return;  
+   }  
+   This return happens before we ever call  
+   getKeysFreeResult(&result),  
+   so the heap buffer is never freed.
+
+3. In the normal (non‐PUBSUB) path, we do call  
+   getKeysFreeResult(&result)  
+   at the end, which correctly frees the buffer.
+
+4. Therefore the bug is a classic memory leak: whenever an executing command is marked with CMD_PUBSUB, trackingRememberKeys() returns early and skips the cleanup call.  
+
+The fix is simply to invoke getKeysFreeResult(&result) before returning from the PUBSUB branch so that any heap memory allocated by getKeysFromCommand() is properly freed.

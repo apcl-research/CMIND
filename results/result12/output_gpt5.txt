@@ -1,0 +1,90 @@
+
+METHOD:
+1. NONE
+2. NONE
+3. NONE
+FILE:
+1. projects/libvips/libvips/libvips/resample/thumbnail.c
+2. projects/libvips/libvips/libvips/resample/reduce.c
+3. projects/libvips/libvips/libvips/tools/vipsthumbnail.c
+Analysis methods:
+data flow analysis:
+source: vips_thumbnail_build
+sink: vips_resize
+REASONING METHODS: backward reasoning
+
+REASONING STEPS:
+- Start from the high-memory symptom observed when running vipsthumbnail (the build path):
+  - vips_thumbnail_build ultimately calls vips_resize with scale factors 1.0 / hshrink and 1.0 / vshrink (the vips_resize invocation is the point where the large image data is processed).
+  - The variables used: in (the image pointer passed to resize), and the computed hshrink and vshrink (calculated earlier).
+- Trace how hshrink / vshrink are computed:
+  - vips_thumbnail_build calls vips_thumbnail_calculate_shrink(..., in->Xsize, preshrunk_page_height, &hshrink, &vshrink).
+  - vips_thumbnail_calculate_shrink sets hshrink = (double) input_width / target_width and vshrink = (double) input_height / target_height (target_width/height come from thumbnail->width/height).
+  - For a 30000x30000 input and thumbnail target 1x1, hshrink and vshrink become very large (≈30000).
+- Ask how the input image (in) is produced before resize:
+  - vips_thumbnail_build obtains t[0] by calling vips_thumbnail_open(thumbnail), which returns an image im (assigned to in).
+  - vips_thumbnail_open sets factor = 1.0 by default and only changes factor for certain loader prefixes (JPEG, TIFF/JP2K/Openslide pyramids, WebP/PDF/SVG scale, HEIF thumbnail).
+  - For loaders that match (JPEG, TIFF, JP2K, Openslide, WebP, Pdf, Svg, Heif) vips_thumbnail_open attempts pre-shrink or pyramid/page/subifd selection before calling the class->open(thumbnail, factor).
+- Check the concrete file-open path used for files:
+  - vips_thumbnail_file_get_info sets thumbnail->loader via vips_foreign_find_load and reads header.
+  - vips_thumbnail_file_open handles many loader prefixes explicitly (JPEG, Openslide, Pdf/Svg/Webp, Jp2k, Tiff, Heif) and passes shrink/level/page/subifd/thumbnail/scale arguments to vips_image_new_from_file when appropriate.
+  - For all other loaders (the final else branch), vips_thumbnail_file_open calls vips_image_new_from_file without any preshrink arguments.
+- Connect to the reported case (PNG):
+  - The PNG loader is not among the explicit prefix-handled cases in vips_thumbnail_file_open, so the code takes the final else branch → vips_image_new_from_file(file, ...) with no pre-shrink.
+  - That means the full-resolution image (30000x30000) is loaded into memory as im/in before vips_resize is applied.
+- Combine the traces:
+  - Large hshrink/vshrink values (because target is 1x1) cause vips_resize to perform an extreme downscale on the full-resolution in.
+  - Because no pre-shrink was applied during load for the PNG case (thumbnail->loader did not match any branch), the full large image is resident while vips_resize runs → explaining the very large memory usage.
+
+Hypothesis:
+- The high memory usage localizes to the interaction between vips_thumbnail_open / vips_thumbnail_file_open (which decide pre-shrink factor and pass loader-specific load-time options) and vips_thumbnail_build (which computes hshrink/vshrink and calls vips_resize on the already-loaded image).
+- Concretely: thumbnail->loader for PNG falls through to the generic else branch in vips_thumbnail_file_open (and similarly in buffer/source open methods), so no pre-shrink is requested at load time. The full 30000x30000 image is therefore loaded into memory and then vips_resize is asked to downscale it to 1x1, producing the observed excessive memory use. The likely corrective localization is in the file/buffer/source open methods (vips_thumbnail_file_open, vips_thumbnail_buffer_open, vips_thumbnail_source_open) or in the vips_thumbnail_open decision logic: they do not request or compute a pre-shrink/load-time factor for loaders that could benefit from it (PNG in this scenario), so the full image is loaded into memory prior to resize.
+
+(If you want me to continue, I can:
+- show the specific places to inspect/modify — e.g. the final else branch of vips_thumbnail_file_open and the analogous branches in the buffer/source variants, and the decision in vips_thumbnail_open that leaves factor at 1.0 for non-handled loaders — or
+- request additional methods/data such as the implementation of the concrete class->open for the PNG loader if you want to confirm whether it supports a load-time shrink/scale argument.)
+Summarization
+Summary of the bug (based only on the provided code and reasoning)
+
+Problem
+- Very large memory use when creating a tiny thumbnail (example: 1×1) from a very large image (example: PNG 30000×30000). The process loads the full-resolution image into memory and then asks vips_resize to do an extreme downscale, causing the high memory usage.
+
+Trace / root cause (key steps)
+1. vips_thumbnail_build:
+   - Calls vips_thumbnail_open to obtain the input image (t[0] / in).
+   - Computes hshrink and vshrink with vips_thumbnail_calculate_shrink using in->Xsize and preshrunk_page_height.
+   - Calls vips_resize(in, ...) with scales 1.0 / hshrink and 1.0 / vshrink — this is where the large image data is actually processed.
+
+2. Shrink calculation:
+   - vips_thumbnail_calculate_shrink sets hshrink = input_width / target_width and vshrink = input_height / target_height (target dims come from thumbnail->width/height).
+   - For a 30000×30000 input and a 1×1 target, hshrink and vshrink ≈ 30000 (very large).
+
+3. How the input image (in) is produced:
+   - vips_thumbnail_build calls vips_thumbnail_open, which first runs class->get_info(thumbnail).
+   - For file-based thumbnails, vips_thumbnail_file_get_info calls vips_foreign_find_load(filename) to pick a loader and then vips_image_new_from_file(filename, NULL) to read a VipsImage header, which is passed to vips_thumbnail_read_header.
+   - vips_thumbnail_open then decides a "factor" (preshrink/pyramid/scale) to pass to class->open based on loader prefixes: special handling exists for JPEG, TIFF/JP2K/Openslide pyramids, WebP/PDF/SVG (scale), HEIF (thumbnail), etc. For those loaders, factor can be set > 1 (or other loader-specific options) to request a pre-shrunk load.
+
+4. File/buffer/source open code:
+   - vips_thumbnail_file_open / vips_thumbnail_buffer_open / vips_thumbnail_source_open implement loader-specific calls to vips_image_new_from_file/_buffer/_source, passing loader-specific options when vips_isprefix matches (e.g., "shrink" for JPEG, "level" for Openslide, "scale" for PDF/SVG/WebP, "subifd"/"page" for TIFF/JP2K, "thumbnail" for HEIF).
+   - Each of these open functions ends with a final else branch which calls the appropriate vips_image_new_from_* without any shrink/scale/preshrink arguments.
+
+5. The concrete reported case (PNG):
+   - PNG loader is not among the explicitly handled prefixes in the file/buffer/source open functions.
+   - Therefore the code takes the final else branch and calls vips_image_new_from_file/_buffer/_source without any pre-shrink arguments — i.e., the full-resolution image is loaded into memory as im/in.
+   - After loading the full image, vips_thumbnail_build computes large hshrink/vshrink (from the target size) and calls vips_resize, so the resize is run on the full-resolution image already resident in memory.
+
+Hypothesis / localization
+- The excessive memory usage is caused by the interaction between:
+  - vips_thumbnail_open / class->get_info reading the image header (via vips_image_new_from_*),
+  - the loader-specific open functions (vips_thumbnail_file_open / vips_thumbnail_buffer_open / vips_thumbnail_source_open) not requesting any preshrink for loaders that are not explicitly handled (PNG falls through),
+  - and vips_thumbnail_build computing huge shrink factors and calling vips_resize on the already-loaded full-resolution image.
+- Concretely: loaders like PNG (not explicitly handled) fall to the generic else branch and are loaded full-size, so no pre-shrink is requested even when the thumbnail target is tiny. This leads to the resize operating on the full image and producing very high memory use.
+
+Specific places to inspect (based on the provided code)
+- vips_thumbnail_open: decision logic that sets factor = 1.0 by default and only alters it for certain loader prefixes.
+- vips_thumbnail_file_open (and the analogous buffer/source open functions): the final else branch that calls vips_image_new_from_* without preshrink/scale arguments.
+- vips_thumbnail_file_get_info / buffer / source get_info: these call vips_image_new_from_* with no shrink arguments to read header info (this is how loader is discovered and sizes read).
+- vips_thumbnail_calculate_shrink and vips_thumbnail_build: how hshrink/vshrink are computed and then passed to vips_resize (the point where the already-loaded image is processed).
+
+Implication / summary statement
+- The observed bug is a missing pre-shrink/load-time option for loaders that are not explicitly handled (PNG in the reported case). Because the code only requests pre-shrunk loads for a subset of loaders, other formats are loaded full-size and then downscaled — producing unexpectedly large memory usage when target sizes are extremely small relative to input.

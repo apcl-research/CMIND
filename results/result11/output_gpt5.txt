@@ -1,0 +1,73 @@
+Summarization
+Summary of the bug report and supporting evidence (only using the given information)
+
+Observed symptom
+- Calling VImage::fill_nearest() without requesting the optional "distance" output causes a memory leak: images allocated during the operation remain allocated even after vips_shutdown(), but if the caller requests "distance" (so they receive the VImage), no leak is observed.
+
+Call sequence and relevant code behavior
+- User code -> VImage::fill_nearest -> VImage::call -> VImage::call_option_string.
+- call_option_string:
+  - Creates the operation with vips_operation_new.
+  - If an option_string is present, it calls vips_object_set_from_string and on failure calls vips_object_unref_outputs and g_object_unref(operation) before throwing.
+  - Calls options->set_operation(operation) to set input properties.
+  - Calls vips_cache_operation_buildp(&operation) which runs the operation build (vips_fill_nearest_build). On build failure, call_option_string calls vips_object_unref_outputs and g_object_unref(operation) and throws.
+  - On success it calls options->get_operation(operation) to retrieve requested outputs into caller-supplied VOption pairs, deletes the VOption, then calls g_object_unref(operation) — but does NOT call vips_object_unref_outputs in the success (normal) path.
+
+- VOption::get_operation:
+  - For each requested (non-input) option, reads the property from the operation object and, for VIPS_TYPE_IMAGE outputs, wraps the returned GObject image into a VImage and assigns it to the caller-supplied VImage* (this transfers ownership / gives the caller a reference that they will manage).
+
+vips_fill_nearest build and finalization
+- vips_fill_nearest_build (called during build):
+  - Creates images for outputs and assigns them to the operation via g_object_set(object, "distance", vips_image_new_memory(), NULL) and g_object_set(object, "out", vips_image_new_memory(), NULL).
+  - Writes data into those images and stores pointers into the VipsFillNearest struct fields nearest->distance and nearest->out via the output-argument wiring (G_STRUCT_OFFSET).
+  - Allocations for these images are therefore held by the operation (g_object_set creates/holds references).
+
+- vips_fill_nearest_finalize:
+  - Frees nearest->seeds (g_array_unref) and calls parent finalize.
+  - There is no explicit unref/free of nearest->distance or nearest->out in finalize.
+
+vips_object_unref_outputs
+- vips_object_unref_outputs is present in the provided code and is used in call_option_string on error paths (set_from_string failure or build failure). Its purpose (by name and usage) is to unref outputs that the operation holds.
+
+Why the leak happens (evidence chain)
+- When build creates the "distance" image and stores it on the operation, that image is referenced by the operation object.
+- If the caller requested "distance" via VOption::set("distance", &vimage), options->get_operation extracts the image from the operation and hands ownership/reference to the caller wrapper; the caller later frees it → no leak.
+- If the caller did NOT request "distance", options->get_operation does not extract/transfer that image reference. After delete options, call_option_string calls g_object_unref(operation) but does NOT call vips_object_unref_outputs in the success path. Because the operation still holds a reference to the output images and finalize does not unref those fields, the images remain live → memory leak.
+- call_option_string does call vips_object_unref_outputs in error paths, which is consistent with no leak when build fails, but omits it on success.
+
+Two hypotheses (both supported by the provided material)
+1) Missing unref of operation-owned outputs in call_option_string success path
+   - Hypothesis: call_option_string should call vips_object_unref_outputs(VIPS_OBJECT(operation)) in the normal-success path (after options->get_operation and before g_object_unref(operation)). That would unref any outputs the operation still holds that were not transferred to the caller, preventing the leak.
+   - Supporting points:
+     - call_option_string already calls vips_object_unref_outputs in error paths.
+     - vips_fill_nearest_build places output images on the operation (via g_object_set), so they need to be unreferenced if not claimed by the caller.
+     - vips_object_unref_outputs exists in the provided code and is the mechanism used on error paths.
+
+2) Missing unref of output image fields in vips_fill_nearest_finalize
+   - Hypothesis: vips_fill_nearest_finalize should unref/free nearest->distance and nearest->out. Currently finalize only frees nearest->seeds and then calls parent finalize; it does not unref the image pointers stored in the instance. If finalize unref'd those images, they would be released when the operation object is finalized (which happens when g_object_unref(operation) drops the last reference).
+   - Supporting points:
+     - vips_fill_nearest_build stores images into nearest->distance and nearest->out (via the object’s output wiring).
+     - finalize does not release those images.
+     - If the operation object holds references only via those struct fields and finalize does not unref them, they will remain referenced indefinitely.
+
+Notes about the two hypotheses
+- Both hypotheses are consistent with the observed behavior and provided code: build allocates and assigns images to the operation; outputs are transferred to the caller only when requested; call_option_string unrefs operation and uses vips_object_unref_outputs on error paths only; finalize does not unref the instance image fields.
+- The two fixes are alternative (possibly complementary) mitigation points:
+  - Ensure operation-held outputs that were not handed to the caller are explicitly unref'd before dropping the operation (call vips_object_unref_outputs in the normal-success path of call_option_string).
+  - Or ensure the class finalize unrefs any image fields placed in the instance (nearest->distance and nearest->out) so they are released when the object is destroyed.
+- The provided forward-reasoning explicitly suggests adding vips_object_unref_outputs before g_object_unref(operation) in the success path of call_option_string.
+- The provided backward-reasoning explicitly points out that finalize omits unref of nearest->distance and nearest->out and suggests the leak is caused by finalize failing to unref those fields.
+
+Concrete methods / places mentioned (from provided material)
+- VImage::call_option_string — currently calls vips_object_unref_outputs on option_string/set_from_string and build failures, but not in the normal-success path.
+- vips_fill_nearest_build — allocates "distance" and "out" via vips_image_new_memory and assigns them to the operation (g_object_set).
+- vips_fill_nearest_finalize — frees seeds but does not unref nearest->distance or nearest->out.
+- vips_object_unref_outputs(VipsObject *object) — defined at the end of the provided code; used by call_option_string in error paths.
+
+Summary conclusion (based only on given info)
+- There is a reproducible memory leak when fill_nearest() is called without requesting the optional "distance" output; the leak is caused by images created during vips_fill_nearest_build that remain referenced and are not released in the successful path. Two plausible root causes in the provided code are:
+  1) call_option_string omits calling vips_object_unref_outputs in the success path (so operation-held output references that weren’t transferred to the caller remain); and/or
+  2) vips_fill_nearest_finalize does not unref nearest->distance and nearest->out, so finalization of the operation does not free those images.
+- The provided evidence and function definitions point to vips_object_unref_outputs as the intended mechanism to clear unclaimed outputs (it is used on error paths), and also show that the finalize implementation for VipsFillNearest currently omits explicit unrefs for its output image fields.
+
+If you want, I can (only if you request) outline the minimal code-change options (where to call vips_object_unref_outputs or where to unref the instance image pointers) strictly based on the provided code (no assumptions beyond it).

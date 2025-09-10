@@ -1,0 +1,21 @@
+Summarization
+Here’s what the investigation shows, based only on the information given:
+
+1. Crash site  
+   The ASan back-trace pins the heap-buffer-overflow at the very first line of vips__token_get():  
+     p += strspn(p, " \t\n\r");  
+
+2. Root cause  
+   • vips__token_get assumes that the incoming pointer p always points at a C-string terminated by '\0'.  
+   • In fact, p sometimes comes from routines such as vips__find_rightmost_brackets or vips_filename_suffix_match, which can hand back pointers into substrings that are not NUL-terminated.  
+   • Calling strspn on a non-terminated region lets strspn read past the end of the allocation looking for either a non‐whitespace character or the zero byte. That out-of-bounds read trips the ASan heap-buffer-overflow check.  
+
+3. Why only whitespace skipping?  
+   vips__token_get skips leading whitespace with strspn before it ever checks bounds or the first character. All other token‐parsing branches assume p is a well-formed C-string, so they never get executed once you’ve already walked off the end.  
+
+4. Implications and fix direction  
+   To prevent the overflow, vips__token_get must not call strspn on a raw pointer of unknown length. Possible remedies include:  
+   – Ensuring that every substring passed in is NUL-terminated  
+   – Replacing strspn(p, …) with a bounded scan that stops at the end of the known buffer region  
+
+That is the entirety of the bug summary based on the provided trace and code.

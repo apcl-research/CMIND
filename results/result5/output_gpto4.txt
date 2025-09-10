@@ -1,0 +1,23 @@
+
+Summarization
+Here’s what the static analyzer and the code tell us, distilled into the core findings:
+
+1. In smack_benchmark():  
+   – buf = malloc(BUF_SIZE) is never freed.  
+   – s = smack_create(…) allocates a new SMACK object (and its name string) but smack_destroy(s) is never called.  
+
+2. smack_compile(s) internally allocates:  
+   – m_state_table via create_intermediate_table()  
+   – m_match array via create_matches_table()  
+   – smack->table via smack_stage4_make_final_table()  
+   These allocations are only torn down by smack_destroy(s), which the benchmark never invokes.
+
+3. As a result, every allocation in the benchmark’s call chain remains live until program exit:  
+   – The character buffer (buf)  
+   – The SMACK structure and its internal tables (state table, match table, final transition table, pattern list)  
+
+4. Missing deallocation calls (methods):  
+   – free(buf) after the benchmarking loop  
+   – smack_destroy(s) once the benchmark is done  
+
+Summary: smack_benchmark leaks all heap memory it allocates because it never calls free() on its buffer or smack_destroy() on the SMACK object it built.

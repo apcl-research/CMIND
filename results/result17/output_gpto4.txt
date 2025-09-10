@@ -1,0 +1,16 @@
+
+Summarization
+Here’s what the provided information tells us, boiled down to the essential bug report:
+
+1. In DisplayOptionsPanel_eventHandler, the code does this without any safety check:  
+   OptionItem* selected = (OptionItem*)Panel_getSelected(super);
+
+2. Panel_getSelected returns NULL when its internal vector of items is empty.
+
+3. Immediately afterwards the handler unconditionally calls  
+   OptionItem_kind(selected)  
+   (and later also tests selected in cases ‘-’ and ‘+’), which dereferences the pointer.
+
+4. If the panel happens to have no items (so Panel_getSelected returns NULL), the call to OptionItem_kind(selected) is effectively a null‐pointer dereference and will crash.
+
+In short: **the event handler for the “Display options” panel assumes it always has a selected item but never checks for NULL**, leading to a potential null‐pointer dereference when the panel is empty.

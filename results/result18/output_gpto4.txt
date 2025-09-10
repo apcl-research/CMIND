@@ -1,0 +1,21 @@
+Summarization
+Here’s the concise summary of the one critical bug exposed by the provided reasoning and code:
+
+• Location of the fault  
+  In DarwinProcess_scanThreads (called from the DarwinProcessTable update loop).
+
+• What the code is doing  
+  1. Calls task_threads() to get an array `thread_list` of `thread_count` thread ports.  
+  2. Iterates over that array, de‐allocating each individual thread port with mach_port_deallocate().  
+  3. Calls vm_deallocate() on the buffer itself:  
+     vm_deallocate(mach_task_self(), (vm_address_t)thread_list, sizeof(thread_port_array_t) * thread_count);
+
+• What goes wrong  
+  – `thread_port_array_t` is a pointer type (i.e. the size of `thread_list`), not the size of an individual thread port entry.  
+  – Multiplying the pointer size by `thread_count` computes the wrong byte count—too large—so vm_deallocate() frees past the end of the actual buffer.
+
+• Consequence  
+  Over‐deallocating memory corrupts whatever lives immediately after the thread_list allocation. On the next memory access that corrupted region, the program crashes with SIGSEGV (as the backtrace shows).
+
+• Correct fix (in principle)  
+  Replace sizeof(thread_port_array_t) with sizeof(thread_list[0]) (the size of a single port) so that the total deallocation length exactly matches the task_threads() allocation.

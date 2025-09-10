@@ -1,0 +1,26 @@
+
+Summarization
+Summary of the bug(s) found (from the provided reasoning and code):
+
+- A memory leak in cliLegacyIntegrateHelp
+  - Function affected: cliLegacyIntegrateHelp (near the top of the provided file).
+  - Root cause: redisCommand(context, "COMMAND") returns a heap-allocated redisReply* that the caller must free with freeReplyObject(reply). cliLegacyIntegrateHelp has multiple early-return paths that return while reply is non-NULL without calling freeReplyObject(reply).
+  - The two problematic paths shown in the reasoning:
+    1. Immediately after redisCommand:
+       - The code does: if (reply == NULL || reply->type != REDIS_REPLY_ARRAY) return;
+       - If reply == NULL this is fine. If reply != NULL but reply->type != REDIS_REPLY_ARRAY this returns without freeing reply, leaking the redisReply object.
+    2. Inside the for loop iterating reply->elements:
+       - The code checks entry shape and then does return; on malformed entry:
+         if (entry->type != REDIS_REPLY_ARRAY || entry->elements < 4 || ...) return;
+       - That return also happens while reply is still allocated and not freed.
+  - Consequence: redisReply objects allocated by redisCommand in those paths are leaked.
+  - Ownership precedent elsewhere: other functions in the file (and later code paths in cliInitHelp and others) show the intended pattern of calling freeReplyObject on replies before returning, confirming the required cleanup.
+
+- Scope / impact
+  - The leak is limited to the specific early-return conditions within cliLegacyIntegrateHelp: when COMMAND returns a non-NULL reply with an unexpected type, or when a malformed entry is encountered in the reply array.
+  - No other bug reports were localized in the supplied reasoning; other portions of the code use freeReplyObject consistently.
+
+- Minimal remediation (summary, not code)
+  - Ensure reply is freed before every early return in cliLegacyIntegrateHelp (e.g., call freeReplyObject(reply) before returning on error/malformed cases), or restructure the function to centralize cleanup (single exit path that frees reply when allocated).
+
+If you want, I can (only upon request) point to the exact return statements and show the minimal edits needed to avoid the leak.

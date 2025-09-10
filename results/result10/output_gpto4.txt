@@ -1,0 +1,12 @@
+
+Summarization
+Summary of the reported bugs in Sandboxie’s GetRawInputDeviceInfo wrapper (in sbiedll.dll):
+
+1. Misinterpretation of the size parameter (pcbSize):  
+   – According to the Windows API, when uiCommand == RIDI_DEVICENAME, *pcbSize is a count of wide characters; for RIDI_PREPARSEDDATA and RIDI_DEVICEINFO it is a byte size of the target structure.  
+   – The Sandboxie wrapper always treats *pcbSize as a wide-char count and blindly multiplies it by sizeof(WCHAR), even when the command expects a raw-byte size.  
+   – As a result, for non-name commands the wrapper requests or copies twice as many bytes as actually allocated, leading to buffer overruns or underruns.
+
+2. Use-of-uninitialized memory when pData is NULL:  
+   – The wrapper reads *pcbSize before it checks whether pData is NULL.  
+   – If the caller passes pData==NULL to query the required buffer size, the wrapper dereferences an undefined *pcbSize value, causing crashes (e.g. in memcpy) or other unpredictable behavior.

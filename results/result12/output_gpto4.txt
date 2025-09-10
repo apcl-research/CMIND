@@ -1,0 +1,14 @@
+Summarization
+Here’s a concise summary of the two related memory‐blowup bugs you’ve identified from the provided code and reasoning steps:
+
+1. Missing “pre‐shrink” for PNG in vipsthumbnail  
+   • In vips_thumbnail_open, the code computes and applies a loader‐level shrink factor only for JPEG, TIFF, JP2K, WebP, PDF/SVG and HEIF.  
+   • PNG isn’t special-cased, so the “factor” stays at 1.0 and vips_image_new_from_file loads the entire high-resolution PNG (e.g. 30 000×30 000) into memory.  
+   • All downstream operations (premultiply, colourspace, vips_copy, vips_resize, etc.) then work on that full-sized image, spawning huge intermediates and driving peak usage to ~18 GB.
+
+2. Skipping initial subsample for non-NEAREST kernels in vips_resize  
+   • In vips_resize_build, the “subsample” branch (which would divide image dimensions by an integer shrink factor) runs only when kernel == VIPS_KERNEL_NEAREST.  
+   • For any other kernel (Lanczos, bicubic, etc.), the code skips that branch entirely.  
+   • It then falls through to the “residual” path—calling vips_reducev and vips_reduceh on the full-resolution image—allocating very large work buffers and easily exhausting memory (e.g. when resizing 30 000×30 000→1×1 with Lanczos).
+
+Together, these oversights mean that for PNG inputs and/or for non-nearest resampling kernels, VIPS fails to do any early down‐sampling in its loaders or the resize build, leading to huge in-memory images and intermediates—and in extreme cases, out-of-memory failures.

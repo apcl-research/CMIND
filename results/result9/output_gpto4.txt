@@ -1,0 +1,15 @@
+Summarization
+Here’s a concise summary of the bug you’ve identified in the provided code:
+
+1. Function at fault  
+   Process_GetStringFromPeb in the driver code, which reads a UNICODE_STRING out of another process’s PEB.
+
+2. What happens  
+   – On every call it unconditionally allocates a “LocalBuffer” via Mem_Alloc.  
+   – If the PEB-reading and copy logic succeeds, it stores LocalBuffer in *OutBuffer and returns.  
+   – On any error or early-exit path (zero length, offsets exceed limits, Buffer NULL, exceptions in the __try block), it simply detaches and returns without ever calling Mem_Free on LocalBuffer.
+
+3. Impact  
+   Every failed or exceptional invocation leaks the LocalBuffer allocation. Over time (or under error-heavy workloads) this will consume nonpaged pool and may destabilize the driver or the system.
+
+That is the core bug based solely on the code excerpts and your reasoning steps.

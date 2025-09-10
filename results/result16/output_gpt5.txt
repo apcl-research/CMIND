@@ -1,0 +1,21 @@
+Summarization
+Summary of the bug(s) found (based only on the supplied reasoning and code):
+
+- Observed bug: memory leak in Settings_new related to legacyDotfile.
+  - Allocation site: legacyDotfile is created by String_cat(home, "/.htoprc"), which calls xMalloc to allocate a heap buffer.
+  - What happens to the allocation:
+    - After creating legacyDotfile, Settings_new calls lstat(legacyDotfile, &st).
+      - If lstat fails or the path is a symlink, legacyDotfile is freed immediately and set to NULL (no leak).
+      - If lstat succeeds and the file is not a symlink, legacyDotfile remains allocated.
+    - Settings_new then calls Settings_read(this, this->filename, ...).
+      - If the first Settings_read call fails (ok == false) and legacyDotfile is non-NULL, the code attempts to read legacyDotfile; after that branch it frees legacyDotfile.
+      - If the first Settings_read call succeeds (ok == true) and legacyDotfile was left non-NULL by lstat, the (!ok && legacyDotfile) branch is not entered and legacyDotfile is never freed before Settings_new returns.
+  - Result: when a legacy dotfile exists (lstat succeeded) and the primary settings file read succeeds, the heap buffer returned from String_cat (legacyDotfile) is leaked because there is no free before Settings_new returns.
+
+- Root cause:
+  - Control-flow omission in Settings_new: legacyDotfile is only freed in the lstat-failure/symlink branch and in the branch that handles a failed primary read; there is no unconditional cleanup of legacyDotfile before returning when the primary read succeeds.
+
+- Impact:
+  - Memory leak of a small heap allocation (the path string) on every call to Settings_new in the specific scenario where the legacy dotfile exists and the primary settings read succeeds.
+
+- (No other bugs were identified in the provided reasoning steps.)

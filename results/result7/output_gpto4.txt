@@ -1,0 +1,22 @@
+Summarization
+Here’s a concise summary of the bug based solely on the provided reasoning and code snippets:
+
+1. Symptom  
+   • “Unable to allocate beacon adv” errors start appearing once the “local_adv_pool” slab runs out of free entries.
+
+2. Root cause  
+   • Every time a beacon is sent—whether via unprovisioned_beacon_send() or via the net-beacon path (net_beacon_for_subnet_send())—an advertising buffer (“adv”) is allocated from the slab by bt_mesh_adv_create() → adv_create_from_pool() → k_mem_slab_alloc().  
+   • Neither unprovisioned_beacon_send() nor net_beacon_for_subnet_send() (called indirectly via beacon_send()) ever calls the corresponding k_mem_slab_free() to return that buffer when the advertisement completes.
+
+3. Leak path  
+   • beacon_send(work): decides whether to call unprovisioned_beacon_send() or to proceed down the provisioned-beacon path → net_beacon_for_subnet_send().  
+   • Both unprovisioned_beacon_send() and net_beacon_for_subnet_send() invoke bt_mesh_adv_create() but never invoke a “free” or “release” on the adv object.  
+   • As the beacon timer keeps rescheduling these calls at each interval, the slab’s entries accumulate until they are exhausted.
+
+4. Missing methods  
+   • A matching k_mem_slab_free() (or equivalent release function) is never called in  
+     – unprovisioned_beacon_send()  
+     – net_beacon_for_subnet_send()
+
+5. Consequence  
+   • Steady leak of adv buffers → slab exhaustion → beacon allocation failures.

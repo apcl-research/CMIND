@@ -1,0 +1,25 @@
+
+Summarization
+Here’s a concise summary of the bug chain based solely on the provided information:
+
+1. The helper function  
+   bool obs_module_get_locale_string(const obs_module_t *mod, …)  
+   assumes its first argument (`mod`) is non-NULL and does  
+   `mod->get_string(…)` without ever checking `mod` itself.  
+
+2. obs_module_get_locale_text calls obs_module_get_locale_string without adding any null-check around its `mod` parameter.  
+
+3. In all other toolbars (DisplayCaptureToolbar, AudioCaptureToolbar, WindowCaptureToolbar), after fetching a module via get_os_module they explicitly do  
+   if (!mod) return;  
+   thus avoiding any null dereference.  
+
+4. ApplicationAudioCaptureToolbar::Init, however, calls  
+   obs_get_module("win-wasapi") → mod  
+   then immediately calls  
+   obs_module_get_locale_text(mod, …)  
+   without checking whether `mod` is NULL.  
+
+5. On Linux, obs_get_module("win-wasapi") always returns NULL, so ApplicationAudioCaptureToolbar::Init ends up passing a NULL `mod` into obs_module_get_locale_text, which in turn passes it into obs_module_get_locale_string and dereferences mod->get_string, causing the crash.  
+
+Hypothesis  
+ApplicationAudioCaptureToolbar::Init fails to guard against a NULL module before requesting localized text, leading to a NULL-pointer dereference inside obs_module_get_locale_string.

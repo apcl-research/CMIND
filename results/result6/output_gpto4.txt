@@ -1,0 +1,30 @@
+Summarization
+Here’s what we know from the provided material:
+
+1. Crash location  
+   – The segfault happens in `partial_checksum()` at the line  
+       xsum -= (icmp_length & 1) * px[i-1];  
+   – When `icmp_length == 0`, the loop never runs so `i` stays 0, and `px[i-1]` becomes `px[-1]`, an out-of-bounds read.
+
+2. Call chain that leads to the bad call  
+   • `payloads_udp_readfile()` parses a user‐supplied file to build UDP payloads.  
+   • A malformed payload file (one that never supplies any quoted data) results in `parsed.app_length == 0`.  
+   • It calls `payloads_udp_add(…, buf, buf_length, …)`, with `buf_length == 0`.  
+   • Inside `payloads_udp_add()`, after copying the zero‐length buffer, it does  
+         p->xsum = partial_checksum(buf, length);  
+     passing that zero length straight through.  
+
+3. Root cause  
+   – `partial_checksum()` has no special case for `icmp_length == 0`. It unconditionally subtracts `px[i-1]` when the length is odd (and zero is “even,” but the code still evaluates the subtraction when `(icmp_length & 1)` is zero or nonzero).  
+   – With length == 0, that subtraction becomes an invalid load at `px[-1]`.
+
+4. Effect  
+   – Any UDP payload entry of length zero—whether from a malformed input file or elsewhere—will trigger this out-of-bounds access and crash.
+
+5. Fix outline  
+   – Before doing the `xsum -= …px[i-1]` step, guard against zero length. For example:  
+       if (icmp_length > 0 && (icmp_length & 1))  
+           xsum -= px[i-1];  
+   – Or early‐return zero when `icmp_length == 0`.  
+
+That is all the bug information derivable from the code and notes you provided.

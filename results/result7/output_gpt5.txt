@@ -1,0 +1,67 @@
+Summarization
+Summary of bugs and supporting evidence (based only on the provided information)
+
+Overall symptom (common to all three analyses)
+- local_adv_pool (a k_mem_slab used by adv_create_from_pool) is exhausted over time: adverts are allocated (k_mem_slab_alloc) but not freed (k_mem_slab_free), eventually causing advertising to fail.
+
+Common allocation and free mechanisms shown in the code
+- Allocation: adv_create_from_pool -> k_mem_slab_alloc; adv->__ref is set to 1 on creation.
+- bt_mesh_adv_create / adv_create wrappers call adv_create_from_pool from several call sites:
+  - prov_link_open -> bearer_ctl_send -> ctl_adv_create -> adv_create -> bt_mesh_adv_create -> adv_create_from_pool
+  - gen_prov_ack_send -> adv_create -> bt_mesh_adv_create -> adv_create_from_pool
+  - prov_send_adv -> adv_create -> bt_mesh_adv_create -> adv_create_from_pool
+- Deallocation: bt_mesh_adv_unref decrements adv->__ref and calls k_mem_slab_free when __ref hits 0.
+
+Bug 1 — gen_prov_ack_send fails to unref on send_unacked error
+- Behavior observed in reasoning:
+  - gen_prov_ack_send creates an adv (adv_create) and then calls send_unacked(adv,...).
+  - If send_unacked returns an error, gen_prov_ack_send clears ADV_ACK_PENDING but does not call bt_mesh_adv_unref(adv).
+  - By contrast, bearer_ctl_send_unacked takes an adv, calls send_unacked, and on send_unacked failure explicitly calls bt_mesh_adv_unref(adv).
+- Impact:
+  - When send_unacked fails (e.g., queue full), gen_prov_ack_send leaves the newly created adv allocated with its initial reference still set, causing a leak that contributes to local_adv_pool exhaustion.
+- Evidence in provided code:
+  - gen_prov_ack_send: after adv = adv_create(...); err = send_unacked(adv, ...); if (err) { atomic_clear_bit(...); } — no bt_mesh_adv_unref call on err.
+  - bearer_ctl_send_unacked: err = send_unacked(...); if (err) { bt_mesh_adv_unref(adv); }
+
+Bug 2 — delayed_adv_send_end only unrefs for the "unacked" path; reliable queued adverts may not be unref'd on send completion
+- Behavior observed in reasoning:
+  - bt_mesh_adv_send takes a ref (bt_mesh_adv_ref) before putting adv on a FIFO (k_fifo_put).
+  - tx_work_handler sends adverts via bt_mesh_adv_send with user_data == true for unacked entries and user_data == false for reliable (link.tx.adv[]) entries.
+  - delayed_adv_send_end is the send completion callback (registered via delayed_adv_send_cb). It checks user_data (unacked flag) and only calls bt_mesh_adv_unref for the unacked case:
+    - if (unacked && unacked_adv->adv != NULL) { ... bt_mesh_adv_unref(unacked_adv->adv); unacked_adv->adv = NULL; }
+  - For user_data == false (reliable segmented adverts), delayed_adv_send_end does not perform bt_mesh_adv_unref on send completion. Those advs are expected to be released by free_segments / prov_clear_tx when the transaction finishes or is aborted.
+- Impact:
+  - If reliable adverts are sent and the transaction never reaches the code paths that call free_segments (or if free_segments is not called due to missing acks or another logic path), the reference that bt_mesh_adv_send took at enqueue time is never released here, producing a leaked reference that prevents the slab entry from being freed. Over many sends this leads to slab exhaustion.
+- Evidence in provided code:
+  - tx_work_handler calls bt_mesh_adv_send(..., (void *)true) for unacked and bt_mesh_adv_send(..., (void *)false) for reliable.
+  - delayed_adv_send_end only unrefs and clears link.tx.unacked[link.tx.last_unacked] when unacked is true.
+  - free_segments does bt_mesh_adv_unref on link.tx.adv entries (but relies on explicit calls from other protocol completion paths).
+
+Bug 3 — reference-count/ownership mismatch in the unacked send path
+- Behavior observed in reasoning:
+  - send_unacked stores adv into link.tx.unacked[] without taking an explicit reference (it assigns link.tx.unacked[i].adv = adv).
+  - bt_mesh_adv_send, which actually enqueues the adv for transmission, always does bt_mesh_adv_ref(adv) before putting it on the FIFO (so the enqueue adds one reference).
+  - delayed_adv_send_end unrefs once for the unacked entry on send completion. That unref in delayed_adv_send_end therefore releases the FIFO reference taken by bt_mesh_adv_send.
+  - The original creation reference (adv->__ref == 1 set by adv_create_from_pool) remains and is not released in the normal successful unacked-send flow because send_unacked never took a reference for the unacked[] slot and the completion callback only drops the queued reference.
+- Impact:
+  - On successful unacked sends, the original creation reference remains permanently held and never reaches bt_mesh_adv_unref->k_mem_slab_free. Repeated uses leak one slab entry per such adv, draining local_adv_pool.
+- Evidence in provided code:
+  - send_unacked does link.tx.unacked[i].adv = adv; (no bt_mesh_adv_ref).
+  - bt_mesh_adv_send calls bt_mesh_adv_ref(adv) and then k_fifo_put(bt_mesh_adv_ref(adv)).
+  - delayed_adv_send_end unrefs the unacked entry once and clears that array slot.
+  - gen_prov_ack_send creates adv and calls send_unacked, which is the path used to send ACKs and can be frequent.
+
+Net result from the three analyses (overlap and consistency)
+- All three analyses point to resource (k_mem_slab) exhaustion caused by advertisements created via adv_create_from_pool not reaching bt_mesh_adv_unref -> k_mem_slab_free.
+- Two distinct but related root causes are identified in the code:
+  1) Missing cleanup on send_unacked failure: gen_prov_ack_send does not call bt_mesh_adv_unref when send_unacked returns an error, leaking that created adv.
+  2) Reference-count / ownership mismatches in both the reliable and unacked send flows:
+     - For unacked flow: send_unacked stores adv without taking a reference while bt_mesh_adv_send takes a ref for the FIFO; the completion unref only frees the FIFO reference, leaving the initial creation reference permanently held.
+     - For reliable flow: delayed_adv_send_end does not unref on completion for the reliable (user_data == false) case; it relies on protocol completion to invoke free_segments/prov_clear_tx to release those references. If those completion paths don't run, the queued reference remains leaked.
+- These issues produce the observed symptom: local_adv_pool entries accumulate non-zero adv->__ref values and are never freed, causing allocation failures and advertising cessation.
+
+What is explicitly shown (no external assumptions)
+- The code paths and functions that allocate advs, enqueue them for send, store them in unacked/adv arrays, and where unref() is called (or not) are present in the provided code and were used to reach the above hypotheses.
+- The specific locations where the mismatches occur (gen_prov_ack_send not unref-ing on send_unacked error; send_unacked storing without ref; delayed_adv_send_end only unref-ing for unacked) are present in the supplied code.
+
+These are the bugs and the evidence for them based solely on the provided information.

@@ -1,0 +1,22 @@
+Summarization
+Here’s what we know from the code and reasoning you provided:
+
+1.  Call chain  
+    • VImage::fill_nearest() in C++ → call() → vips_call_split → C API vips_fill_nearest()  
+    • vips_fill_nearest() dispatches to its “build” method, vips_fill_nearest_build()
+
+2.  What vips_fill_nearest_build() does  
+    – It scans the input image for “seed” pixels (non‐zero pels) and builds up a list of seeds.  
+    – It unconditionally allocates two internal images via  
+         g_object_set(object, "distance", vips_image_new_memory(), NULL);  
+         g_object_set(object, "out",      vips_image_new_memory(), NULL);  
+    – It initializes “distance” to zeros (or large values) and copies the original pixels to “out.”  
+    – It then iteratively grows each seed, writing into both “out” and “distance” until all pixels are filled.
+
+3.  Where the leak is  
+    – The “out” image is returned to the user via the “out” argument in the C API (and then wrapped by the C++ VImage).  
+    – The “distance” image is an optional output—VIPS_ARG_IMAGE(..., “distance”, VIPS_ARGUMENT_OPTIONAL_OUTPUT)—so if the caller omits it, the wrapper never returns it, never holds onto it, and never unrefs it.  
+    – Because vips_fill_nearest_build() allocates “distance” unconditionally, but no code path ever frees it when the user doesn’t request it, that allocation is leaked on every call where “distance” isn’t captured.
+
+4.  Conclusion  
+    There is a memory leak entirely inside vips_fill_nearest_build(): it should only allocate the optional “distance” image if the caller actually requested it (or else ensure it is unreffed before returning).

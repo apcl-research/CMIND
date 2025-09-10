@@ -1,0 +1,39 @@
+
+Summarization
+Summary of the bug(s) found (only using the provided information)
+
+Observed failure
+- gdb shows a SIGSEGV occurring inside VSTPlugin::loadEffect().
+
+Primary fault location
+- VSTPlugin::loadEffect() — specifically the sequence:
+  1. resolve plugin entry point (os_dlsym -> mainEntryPoint)
+  2. call plugin = mainEntryPoint(hostCallback_static)
+  3. immediately do plugin->user = this;
+- The crash is caused by dereferencing plugin (plugin->user = this) without any null/validity check of plugin after the plugin main entry point returns.
+
+How that leads to SIGSEGV (immediate cause)
+- If mainEntryPoint(...) returns nullptr (or an invalid pointer), the subsequent plugin->user = this dereferences a null/invalid pointer and causes SIGSEGV.
+
+Call-chain and why existing validation does not prevent the crash
+- loadEffect() is called from loadEffectFromPath().
+- loadEffectFromPath() only validates the returned AEffect* (checks magic, number of channels, flags, etc.) after loadEffect() returns.
+- Because the unsafe write (plugin->user = this) happens inside loadEffect(), the later validation in loadEffectFromPath() occurs too late to prevent the segfault.
+
+Other relevant code facts from the provided snippets
+- loadEffect() attempts several symbol names via os_dlsym: "VSTPluginMain", then "VstPluginMain()", then "main". It checks if mainEntryPoint is nullptr and bails out if it cannot get any symbol pointer. However, even if a symbol is found, the call mainEntryPoint(hostCallback_static) can still return nullptr (or an invalid pointer).
+- hostCallback_static uses effect->user to find the VSTPlugin instance, but the hostCallback already guards access by checking effect && effect->user before casting. That does not mitigate the crash in loadEffect(), because the crash happens earlier when plugin is dereferenced in loadEffect() itself.
+- loadEffectFromPath() performs many validations and setup (magic number, channel counts, dispatcher calls, setting sample rate, block size, effMainsChanged, effectReady = true, etc.), but these are all conditioned on a valid effect pointer that must survive the initial assignment done inside loadEffect().
+
+Hypothesis (based only on provided information)
+- The segmentation fault is caused by VSTPlugin::loadEffect dereferencing the AEffect* returned by the plugin's entry point without verifying it. If the plugin main returns nullptr (or an otherwise invalid pointer), plugin->user = this triggers SIGSEGV.
+
+Concrete, minimal remediation suggestions (derived from code shown)
+- After plugin = mainEntryPoint(hostCallback_static), immediately check whether plugin is nullptr (and ideally perform very basic validity checks) before assigning plugin->user or otherwise dereferencing plugin.
+- If plugin is nullptr or fails basic validation, unload the library (or do other safe cleanup) and return nullptr — letting loadEffectFromPath handle user-visible error handling/logging.
+- Alternatively (or additionally) move some of the early effect validity checks (e.g., magic number, numInputs/numOutputs range) into loadEffect() immediately after mainEntryPoint returns, so loadEffect does not mutate or dereference an invalid pointer.
+
+Summary severity and scope (from provided info)
+- The bug is a direct crash triggered by dereferencing a possibly-null AEffect* returned by a plugin's main entry point. It is deterministic when mainEntryPoint returns null/invalid and will always cause a segfault at that point because there is no null check in loadEffect().
+
+No assumptions beyond the provided code and reasoning were made.

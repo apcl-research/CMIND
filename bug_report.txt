@@ -1,0 +1,73 @@
+Operating System Info
+Other
+
+Other OS
+Debian 13 Trixie
+
+OBS Studio Version
+Other
+
+OBS Studio Version (Other)
+30.0.1
+
+OBS Studio Log URL
+https://obsproject.com/logs/BxkDv3VpBNYlZDa0
+
+OBS Studio Crash Log URL
+No crash log generated
+
+Expected Behavior
+OBS studio loads ReaStream VST or at least doesn't crash, refusing to load the plugin
+
+Current Behavior
+OBS-studio crashes with a segmentation fault.
+Backtrace in gdb --ex=run --args env VST_PATH=/opt/reaper/Plugins/FX/ obs
+
+warning: QFSFileEngine::open: No file name specified
+info: User selected new VST plugin: '/opt/reaper/Plugins/FX/reastream.vst.so'
+
+Thread 1 "obs" received signal SIGSEGV, Segmentation fault.
+0x00007fffa0116f1a in VSTPlugin::loadEffect() () from /usr//lib/x86_64-linux-gnu/obs-plugins/obs-vst.so
+(gdb) bt
+#0  0x00007fffa0116f1a in VSTPlugin::loadEffect() () at /usr//lib/x86_64-linux-gnu/obs-plugins/obs-vst.so
+#1  0x00007fffa0115e2a in VSTPlugin::loadEffectFromPath(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) ()
+    at /usr//lib/x86_64-linux-gnu/obs-plugins/obs-vst.so
+#2  0x00007fffa0113842 in  () at /usr//lib/x86_64-linux-gnu/obs-plugins/obs-vst.so
+#3  0x00007ffff7de7bb7 in obs_source_update () at /usr/lib/x86_64-linux-gnu/libobs.so.0
+#4  0x0000555555657d22 in  ()
+#5  0x00007ffff337fb8e in  () at /usr/lib/x86_64-linux-gnu/libQt6Core.so.6
+#6  0x00007ffff44a00d5 in QComboBox::currentIndexChanged(int) () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#7  0x00007ffff4496a1a in  () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#8  0x00007ffff4498b2f in  () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#9  0x00007ffff44a783c in  () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#10 0x00007ffff337ff43 in  () at /usr/lib/x86_64-linux-gnu/libQt6Core.so.6
+#11 0x00007ffff44a0286 in QComboBoxPrivateContainer::itemSelected(QModelIndex const&) () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#12 0x00007ffff449813a in QComboBoxPrivateContainer::eventFilter(QObject*, QEvent*) () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#13 0x00007ffff333329a in QCoreApplicationPrivate::sendThroughObjectEventFilters(QObject*, QEvent*) () at /usr/lib/x86_64-linux-gnu/libQt6Core.so.6
+#14 0x00007ffff4382d52 in QApplicationPrivate::notify_helper(QObject*, QEvent*) () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#15 0x00007ffff437b62e in QApplication::notify(QObject*, QEvent*) () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#16 0x00007ffff33356a8 in QCoreApplication::notifyInternal2(QObject*, QEvent*) () at /usr/lib/x86_64-linux-gnu/libQt6Core.so.6
+#17 0x00007ffff4378238 in QApplicationPrivate::sendMouseEvent(QWidget*, QMouseEvent*, QWidget*, QWidget*, QWidget**, QPointer<QWidget>&, bool, bool) ()
+    at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#18 0x00007ffff43d6f4f in  () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#19 0x00007ffff43d7c95 in  () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#20 0x00007ffff4382d62 in QApplicationPrivate::notify_helper(QObject*, QEvent*) () at /usr/lib/x86_64-linux-gnu/libQt6Widgets.so.6
+#21 0x00007ffff33356a8 in QCoreApplication::notifyInternal2(QObject*, QEvent*) () at /usr/lib/x86_64-linux-gnu/libQt6Core.so.6
+#22 0x00007ffff398f67b in QGuiApplicationPrivate::processMouseEvent(QWindowSystemInterfacePrivate::MouseEvent*) () at /usr/lib/x86_64-linux-gnu/libQt6Gui.so.6
+#23 0x00007ffff39d885c in QWindowSystemInterface::sendWindowSystemEvents(QFlags<QEventLoop::ProcessEventsFlag>) () at /usr/lib/x86_64-linux-gnu/libQt6Gui.so.6
+#24 0x00007fffe71b4c0e in  () at /lib/x86_64-linux-gnu/libQt6XcbQpa.so.6
+#25 0x00007ffff23361f4 in  () at /lib/x86_64-linux-gnu/libglib-2.0.so.0
+#26 0x00007ffff2339317 in  () at /lib/x86_64-linux-gnu/libglib-2.0.so.0
+#27 0x00007ffff2339930 in g_main_context_iteration () at /lib/x86_64-linux-gnu/libglib-2.0.so.0
+#28 0x00007ffff3522f20 in QEventDispatcherGlib::processEvents(QFlags<QEventLoop::ProcessEventsFlag>) () at /usr/lib/x86_64-linux-gnu/libQt6Core.so.6
+#29 0x00007ffff333f5ba in QEventLoop::exec(QFlags<QEventLoop::ProcessEventsFlag>) () at /usr/lib/x86_64-linux-gnu/libQt6Core.so.6
+#30 0x00007ffff333859a in QCoreApplication::exec() () at /usr/lib/x86_64-linux-gnu/libQt6Core.so.6
+#31 0x00005555555edd50 in main ()
+
+Steps to Reproduce
+Create an audio input source, audio output source, or a media source.
+Select any of supplied devices.
+Add a filter > VST 2.x plugin.
+Try to load Reaper's ReaStream plugin (Reaper for Linux, native build)
+Anything else we should know?
+No response

@@ -1,0 +1,72 @@
+
+Summarization
+Summary of the findings (restricted to the provided data)
+
+1) Observed symptom / sink
+- AddressSanitizer shows a heap-buffer-overflow in __interceptor_strspn called from vips__token_get.
+- The very first operation in vips__token_get that reads the input is:
+  p += strspn(p, " \t\n\r");
+  => the overflow is a read from p (strspn scanning past the valid buffer).
+- Immediate implication: the pointer p passed into vips__token_get does not point at a properly NUL-terminated C string (strspn walked past the intended bounds).
+
+2) Call chain and relevant context
+- vips__token_get is invoked from:
+  vips__find_rightmost_brackets -> vips_filename_suffix_match -> vips_foreign_find_save_target_sub -> vips_foreign_map -> vips_foreign_find_save_target -> ...
+- The reproducer/usage that triggered the problem uses filenames with embedded options (example given: out.jpg"[Q='75]"), so parsing of suffix/option substrings (filename / option_string / suffix) is relevant.
+- Callers that construct/pass pointers into vips__token_get include functions that split or provide substrings: vips__filename_split8, vips_filename_suffix_match, and likely vips__find_rightmost_brackets.
+
+3) Two concrete, supported hypotheses (both consistent with provided evidence)
+
+Hypothesis A — caller passes non-NUL-terminated pointer
+- vips__token_get expects p to point at a NUL-terminated C string.
+- If a caller hands it a pointer into a larger buffer without ensuring a terminating '\0' at the intended end of the substring, strspn can read beyond the intended bounds and trigger a heap-buffer-overflow.
+- Candidate sites for the bad pointer: code that produces or slices option/suffix buffers — vips__filename_split8, vips_filename_suffix_match, vips__find_rightmost_brackets (these functions are the origin of the p passed in).
+- Suggested investigation targets (variables/places to check): the pointer value passed as "p" to vips__token_get; the buffers filename / option_string / suffix filled by vips__filename_split8; any pointer arithmetic that returns interior pointers without inserting a terminating NUL.
+
+Hypothesis B — bug inside vips__token_get (quoted-string branch)
+- The quoted-string parsing in vips__token_get contains calculations and indexes that are inconsistent with their intended meaning and can access out-of-bounds memory:
+  - When p points at an opening quote and q = strchr(p + 1, ch) locates the matching closing quote, the code sets n = q - p + 1; the correct count of characters between quotes should be q - p - 1 (this difference is +2).
+  - The function then uses n in vips_strncpy(string, p + 1, i) and also accesses p[n] and p[n + 1]. With the current n these reads/writes can read past the quoted string (and past the buffer terminator).
+  - Later the code advances p by p += n + 1 (and then a further p += 1 after a loop), which relies on n being correct.
+- Out-of-bounds reads or writes here can corrupt heap metadata; such corruption can later cause ASAN to report a heap-buffer-overflow at the start of a subsequent vips__token_get call (the strspn read).
+- This is directly visible in the provided vips__token_get code (quoted branch logic: strchr, q - p + 1, strlen(p + 1), use of p[n] and p[n+1], vips_strncpy).
+
+4) Concrete suspicious code sites (from provided snippets)
+- The strspn call that ASAN flagged:
+  p += strspn(p, " \t\n\r");
+- Quoted-string branch (key operations shown in the provided function):
+  - Find next quote: q = strchr(p + 1, ch)
+  - Set n either to q - p + 1 or strlen(p + 1)
+  - Copy: i = VIPS_MIN(n, size); vips_strncpy(string, p + 1, i);
+  - Inspect p[n] and p[n+1] and possibly write into string[i - 1]
+  - Advance p by p += n + 1; handle escape continuation, then p += 1
+
+5) How the two hypotheses relate
+- Either:
+  - A malformed or non-terminated substring pointer from the caller enables strspn to read out of bounds immediately (Hypothesis A), or
+  - Earlier calls to vips__token_get (or the quoted-string logic itself) corrupt heap memory via incorrect indexing and copying (Hypothesis B), and that corruption is what makes a later strspn overflow show up in ASAN.
+- Both hypotheses are consistent with the provided ASAN stack (overflow in strspn inside vips__token_get) and with the incorrect arithmetic/indices observed in the quoted-string code.
+
+6) Recommended next inspection steps (based on provided code and variables)
+- Inspect callers that produce the p pointer: vips__filename_split8, vips_filename_suffix_match, vips__find_rightmost_brackets. Confirm they pass a NUL-terminated string (or otherwise bound the input) to vips__token_get.
+- Inspect in vips__token_get:
+  - The quoted-string branch: verify the intended meaning of n and whether n should be q - p - 1 (characters between quotes). Check bounds before reading p[n] and p[n+1].
+  - Ensure vips_strncpy uses correct length and that writes do not overflow string buffer, and that string is NUL-terminated as needed.
+  - Check loop advancement arithmetic (p += n + 1 and p += 1) relative to corrected n.
+- Trace actual runtime values with the reproducer filename (out.jpg"[Q='75]") to see:
+  - What p points to on entry to vips__token_get
+  - Whether the input is NUL-terminated at the intended end
+  - Whether q is found and what n becomes
+  - Whether p[n] / p[n+1] are valid memory accesses
+
+7) Likely fixes (as hypotheses, not definitive)
+- Ensure any pointer passed into vips__token_get points to a properly NUL-terminated string (or change the API so callers also pass an explicit length).
+- Fix the quoted-string branch in vips__token_get:
+  - Correct the n calculation for the number of characters between quotes.
+  - Bound checks before reading p[n] and p[n+1].
+  - Ensure correct copying length and NUL termination of the destination string.
+- Either or both fixes may be required depending on root cause.
+
+8) Conclusion
+- The crash is explained either by a bad input pointer (not NUL-terminated) from the callers, or by an internal bug in vips__token_get’s quoted-string handling that performs off-by-two arithmetic and unsafe indexing/copying, leading to heap corruption that later manifests as a strspn overflow.
+- The provided code contains clear evidence supporting the internal off-by-two/indexing bug in the quoted-string branch; callers that build substring pointers should also be audited for proper termination.

@@ -1,0 +1,33 @@
+Summarization
+Summary of the bug(s) found in the provided code and reasoning
+
+1) High-level bug
+- Memory leak in trackingRememberKeys. When getKeysFromCommand allocates heap memory for the key list and the executed command is a PUBSUB command, trackingRememberKeys returns early without freeing that allocated memory.
+
+2) Relevant control flow (trackingRememberKeys)
+- trackingRememberKeys initializes getKeysResult result = GETKEYS_RESULT_INIT.
+- It calls getKeysFromCommand(executing->cmd, executing->argv, executing->argc, &result) and stores the return in numkeys.
+- If numkeys == 0, it returns.
+- It then checks if (executing->cmd->flags & CMD_PUBSUB) and returns immediately if true.
+- Only after processing the keys it calls getKeysFreeResult(&result).
+
+3) Allocation behavior that makes the early return unsafe
+- result initially uses an internal buffer result.keysbuf (so result.keys == result.keysbuf).
+- getKeysFromCommand (via helpers such as getKeysUsingLegacyRangeSpec / getKeysPrepareResult) can set result.size to MAX_KEYS_BUFFER and reallocate result.keys to heap memory when the number of keys exceeds result.size.
+- Therefore, after getKeysFromCommand returns, result.keys may point to heap-allocated memory (not the internal buffer).
+
+4) Exact conditions that lead to the leak
+- getKeysFromCommand returns numkeys > 0 and has allocated result.keys on the heap (numkeys > result.size).
+- executing->cmd->flags has CMD_PUBSUB set.
+- trackingRememberKeys returns early on the CMD_PUBSUB check, skipping the later getKeysFreeResult(&result).
+- Result: heap memory pointed to by result.keys is not freed — memory leak.
+
+5) Affected variables / state
+- Local variable: result (type getKeysResult) inside trackingRememberKeys.
+- Fields: result.keys (may point to heap memory), result.size, result.keysbuf.
+- Flag: executing->cmd->flags & CMD_PUBSUB triggers the early return that causes the leak.
+
+6) Impact (as described)
+- Leaked heap memory whenever a PUBSUB command is processed where getKeysFromCommand allocated a keys array larger than the internal buffer. The leak is deterministic under the stated conditions.
+
+That is the bug summary based strictly on the provided code and reasoning.
