@@ -42,7 +42,7 @@ python3 run.py --config-file=config.json
 ```
 --config-file: Path of your config.json file
 ```
-Note that before you 
+Note that before you run the script, please make sure all paths are correct.
 ## Bug Reports
 The following table is the link to each bug report with PR if any. ``o`` means Cmind successfully localizes the bugs. ``x`` means Cmind fails to localize the bugs. The results and source code are in [Link](results/).
 
