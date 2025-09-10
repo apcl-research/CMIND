@@ -1,0 +1,27 @@
+Here’s what emerges from the provided reasoning and code snippets:
+
+1. Crash Location  
+   - The crash is observed in `mbedtls_asn1_store_named_data()` at the final `memcpy(cur->val.p, val, val_len)`.  
+   - At that point `cur->val.p` is NULL, so the write faults.
+
+2. Why the Pointer Is NULL  
+   - Inside `mbedtls_asn1_store_named_data()`, allocation of `cur->val.p` is only performed when `val_len != 0`.  
+   - If `val_len` is zero, no allocation happens and `cur->val.p` remains NULL (or is freed and set to NULL on updates).
+
+3. Origin of the Zero Length  
+   - Further up the call chain, `mbedtls_x509_set_extension()` takes the user-supplied `val_len` and unconditionally does `val_len + 1` before passing it down to `mbedtls_asn1_store_named_data()`.  
+   - When the caller supplies `val_len == 0xFFFFFFFF` (the maximum 32-bit unsigned value), adding 1 wraps around to 0 (size_t arithmetic overflow).
+
+4. Missing Overflow Check  
+   - There is no check in `mbedtls_x509_set_extension()` to detect or reject the wrap-around from `SIZE_MAX` to 0.  
+   - As a result, a zero length is passed into `mbedtls_asn1_store_named_data()`, leading to the NULL pointer and subsequent segfault.
+
+5. Contrast with Other Code  
+   - In other parts of the library (for example, the Subject Alt Name builder), a macro `CHECK_OVERFLOW_ADD(a, b)` is used to guard against size_t overflow when accumulating lengths.  
+   - No equivalent protection exists in the implementation of `mbedtls_x509_set_extension()`.
+
+Summary of the Bug  
+- Unchecked increment of `val_len` in `mbedtls_x509_set_extension()` can overflow 32-bit size values, producing a zero length.  
+- That zero length suppresses the buffer allocation in `mbedtls_asn1_store_named_data()`, leaving `cur->val.p` NULL.  
+- The final `memcpy()` into `cur->val.p` then dereferences NULL and crashes.  
+- The fix is to add an explicit overflow check before doing `val_len + 1` in `mbedtls_x509_set_extension()`.

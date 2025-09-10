@@ -1,0 +1,32 @@
+Summary of the bug information you provided
+
+Observed symptom
+- A segmentation fault occurs when the code later writes a byte to cur->val.p inside mbedtls_asn1_store_named_data. The crash is a NULL-pointer write (cur->val.p is NULL).
+
+Reproducer / key input
+- The repro passes val_len == 0xFFFFFFFF (size_t max for a 32-bit width in the report).
+- The code adds 1 to val_len (i.e., uses val_len + 1) before allocation/storage; that +1 overflows for 0xFFFFFFFF and yields 0.
+
+Immediate root cause (from the provided reasoning)
+- An unchecked increment/addition of val_len by 1 overflows when val_len == 0xFFFFFFFF, producing 0 for the allocation size.
+- The allocation path (called inside mbedtls_asn1_store_named_data or via an unchecked size passed to it) therefore ends up allocating size 0 (or leaves cur->val.p effectively NULL).
+- No proper validation/overflow check is performed before the addition/allocation, so later code writes to cur->val.p, causing the segfault.
+
+Call chain / affected functions (from provided info)
+- The observed failing write is in mbedtls_asn1_store_named_data (line ~390 reported).
+- The call chain includes: main -> x509_set_extension_length_check -> mbedtls_x509_set_extension -> mbedtls_asn1_store_named_data.
+- Multiple higher-level CSR write helpers call mbedtls_x509_set_extension and are therefore in scope: mbedtls_x509write_csr_set_key_usage, mbedtls_x509write_csr_set_ns_cert_type, mbedtls_x509write_csr_set_extension, and mbedtls_x509write_csr_set_subject_alternative_name (via mbedtls_x509_write_set_san_common). The provided CSR writing code shows these callers.
+- mbedtls_x509_write_set_san_common in the provided code does explicitly check for overflow while building the SAN buffer (uses CHECK_OVERFLOW_ADD and bounds checks during construction). However, the later call into mbedtls_x509_set_extension is implicated as the place where val_len + 1 gets applied/allocated without overflow protection (per the provided reasoning).
+
+Missing pieces you requested (not provided)
+- Implementations for mbedtls_x509_set_extension and mbedtls_asn1_store_named_data were requested in the reasoning but are not present in the provided code. Because those implementations are not available here, the exact line numbers and precise allocation site cannot be confirmed from the supplied material.
+
+Immediate localization and suggested mitigation (based on the provided reasoning)
+- Localization: the bug is localized to the code that computes (val_len + 1) and performs the allocation for the extension value in the path mbedtls_x509_set_extension -> mbedtls_asn1_store_named_data.
+- Mitigation (proposed in the reasoning): add an explicit checked-add / bounds check before doing val_len + 1 and before allocating. Concretely, verify that val_len <= SIZE_MAX - 1 (or use a checked-add macro) and return an appropriate error (e.g., MBEDTLS_ERR_X509_BAD_INPUT_DATA) instead of proceeding when addition would overflow. Also ensure allocation failures and zero-size allocations are handled safely and do not leave cur->val.p NULL before writes.
+
+Impact summary (from provided info)
+- A deliberately large/invalid val_len (0xFFFFFFFF) can cause an integer overflow on val_len + 1, leading to zero-sized allocation / NULL cur->val.p and a subsequent NULL write -> segmentation fault. Callers that accept or forward val_len to mbedtls_x509_set_extension are in scope and would be affected.
+
+Notes / constraints
+- This summary is limited to and derived from the information you supplied. The actual allocation/overflow lines and an exact fix require inspection of the missing implementations of mbedtls_x509_set_extension and mbedtls_asn1_store_named_data (which were requested but not provided).
