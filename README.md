@@ -124,14 +124,12 @@ Here’s what the three analyses agree on, distilled down to the two root bugs y
 
 
 ## Citation
-If you use this work in an academic paper, please cite the following:
+This paper has been accepted by [ICPC Demonstration](https://conf.researchr.org/track/icpc-2026/icpc-2026-tool-demonstration) Track. Please cite the following if you use this in your research
 ```
-@article{Su2025CMIND,
+@inproceedings{su2026cmind,
   title     = {CMind: An AI Agent for Localizing C Memory Bugs},
   author    = {Chia-Yi Su and Collin McMillan},
-  journal   = {xxx},
-  volume    = {xxx},
-  pages     = {xxx},
-  year      = {2025}
+  booktitle = {IEEE/ACM International Conference on Software Engineering Tool Demo (ICPC Tool Demo)},
+  year      = {2026}
 }
 ```
